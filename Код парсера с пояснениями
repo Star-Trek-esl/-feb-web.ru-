@@ -1,0 +1,99 @@
+import requests
+from bs4 import BeautifulSoup
+import csv
+import re
+
+# Базовый URL
+base_url = "https://feb-web.ru"
+
+# Начальный URL для поиска
+initial_url = "https://feb-web.ru/feb/querycgi/querycgi.asp?indexname=kle&febroot=%2Ffeb%2F&tree=1&srchtp=0&text=%28div%23class%3D%22text%22+%5B%F0%F3%F1.+%F1%EE%E2.+%EF%E8%F1%E0%F2%E5%EB%FC%5D%29&lex=%F0%F3%F1.+%F1%EE%E2.+%EF%E8%F1%E0%F2%E5%EB%FC&aut=&tit=&dat=&srchzn=0&how=authorx&numdoc=50"
+
+# Получаем содержимое начальной страницы
+response = requests.get(initial_url)
+response.raise_for_status()  # Проверяем успешность запроса
+
+# Парсим начальную страницу
+soup = BeautifulSoup(response.text, 'html.parser')
+
+# Находим все элементы <li> внутри таблиц <ol>
+li_elements = soup.find_all('ol')
+all_articles = []
+
+for ol in li_elements:
+    for li in ol.find_all('li'):
+        # Находим ссылку <a class="reslink">
+        reslink = li.find('a', class_='reslink')
+        if reslink:
+            href = reslink.get('href')
+            full_url = base_url + href  # Формируем полный URL
+
+            # Переходим по ссылке и получаем содержимое страницы
+            response_frame = requests.get(full_url)
+            response_frame.raise_for_status()
+
+            # Парсим страницу с фреймом
+            soup_frame = BeautifulSoup(response_frame.text, 'html.parser')
+
+            # Ищем тег <frame name="desc">
+            frame_desc = soup_frame.find('frame', attrs={'name': 'desc'})
+            if frame_desc and 'src' in frame_desc.attrs:
+                frame_src = frame_desc['src']
+                full_frame_url = base_url + frame_src  # Формируем полный URL фрейма
+
+                # Переходим по ссылке фрейма и получаем содержимое страницы
+                response_text = requests.get(full_frame_url)
+                response_text.raise_for_status()
+
+                # Парсим страницу с текстом
+                soup_text = BeautifulSoup(response_text.text, 'html.parser')
+
+                # Ищем элемент с информацией о авторе
+                author_tag = soup_text.find('h4', attrs={'l': '0'})
+                if author_tag and 'title' in author_tag.attrs:
+                    author_name = author_tag['title']
+                else:
+                    author_name = 'Не найдено'
+
+                # Ищем текст статьи
+                prose_div = soup_text.find('div', attrs={'class': 'text', 'id': 'prose'})
+                paragraphs = prose_div.find_all('p', attrs={'class': 'text'}) if prose_div else []
+                text = '\n'.join([para.get_text(strip=True) for para in paragraphs])
+
+                # Ищем birth_name в тегах <em> внутри <p class="text">
+                birth_name = ''
+                for para in paragraphs:
+                    em_tags = para.find_all('em')
+                    for em in em_tags:
+                        em_text = em.get_text(strip=True)
+                        # Ищем предыдущий текст перед тегом <em>
+                        previous_sibling = em.previous_sibling
+                        if previous_sibling and isinstance(previous_sibling, str):
+                            previous_text = previous_sibling.strip()
+                            match = re.search(r'псевд\.; наст\. фамилия —$', previous_text)
+                            if match:
+                                birth_name = em_text
+                                break
+                    if birth_name:
+                        break
+
+                # Подготавливаем данные для записи в CSV
+                article_data = {
+                    'author_name': author_name,
+                    'birth_name': birth_name,
+                    'text': text,
+                    'url': full_frame_url
+                }
+                all_articles.append(article_data)
+            else:
+                print(f"Тег <frame name='desc'> не найден на странице {full_url}")
+
+# Записываем данные в CSV файл
+with open('article_data.csv', mode='w', encoding='utf-8', newline='', errors='replace') as file:
+    fieldnames = ['author_name', 'birth_name', 'text', 'url']
+    writer = csv.DictWriter(file, fieldnames=fieldnames)
+    writer.writeheader()
+    for article in all_articles:
+        writer.writerow(article)
+
+print("Данные успешно записаны в article_data.csv")
